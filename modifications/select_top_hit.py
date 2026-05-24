@@ -1,28 +1,12 @@
-import duckdb, datetime, more_itertools, re, time, sys
+import duckdb, datetime, more_itertools, re, time
 import pandas as pd
 import dask.dataframe as dd
 import numpy as np
 from tqdm import tqdm
 from boldigger3.id_engine import parse_fasta
 from string import punctuation, digits
-from pathlib import Path
 
-
-class Tee:
-    """Duplicate output to terminal and log file."""
-    def __init__(self, file, stream):
-        self.file = file
-        self.stream = stream
-
-    def write(self, message):
-        self.stream.write(message)
-        self.file.write(message)
-
-    def flush(self):
-        self.stream.flush()
-        self.file.flush()
-
-TAXONOMY_CONFLICT_COUNTER = 0
+FAILED_IDS = []
 
 def clean_dataframe(dataframe: object) -> object:
     # replace missing values and empty strings in metadata to pd.NA
@@ -58,6 +42,9 @@ def clean_dataframe(dataframe: object) -> object:
         col = dataframe[level].astype("string")
         mask = col.str.contains(pattern, regex=True, na=pd.NA)
         dataframe[level] = col.where(~mask)
+    # dataframe[levels] = dataframe[levels].apply(
+    #     lambda col: col.where(~col.str.contains(pattern, regex=True)).astype("string")
+    # )
 
     # replace all empty strings in dataframe with pd.NA
     dataframe = dataframe.replace("", pd.NA)
@@ -78,9 +65,7 @@ def clean_dataframe(dataframe: object) -> object:
         dataframe["lat"], dataframe["lon"] = np.nan, np.nan
 
     # drop coord column
-    #dataframe = dataframe.drop("coord", axis=1)
-    if "coord" in dataframe.columns:
-        dataframe = dataframe.drop("coord", axis=1)
+    dataframe = dataframe.drop("coord", axis=1)
 
     return dataframe
 
@@ -102,7 +87,7 @@ def stream_hits_to_excel(id_engine_db_path, project_directory, fasta_dict, fasta
             chunk_data = clean_dataframe(chunk_data)
 
             # drop the fasta order just before saving
-            chunk_data = chunk_data.drop("fasta_order", axis=1, errors="ignore")
+            chunk_data = chunk_data.drop("fasta_order", axis=1)
 
             chunk_data.to_excel(
                 output_path.joinpath(f"{fasta_name}_bold_results_part_{part}.xlsx"),
@@ -144,15 +129,22 @@ def get_threshold(hit_for_id: object, thresholds: list) -> object:
 
 
 def move_threshold_up(threshold: int, thresholds: list) -> tuple:
-    """Function to move the threshold up one taxonomic level safely."""
+    """Function to move the threshold up one taxonomic level.
+    Returns a new threshold and level as a tuple.
+
+    Args:
+        threshold (int): Current threshold.
+        thresholds (list): List of all thresholds.
+
+    Returns:
+        tuple: (new_threshold, thresholds)
+    """
     levels = ["species", "genus", "family", "order", "class", "phylum"]
 
-    idx = thresholds.index(threshold)
-    if idx + 1 >= len(thresholds):
-        # Already at highest threshold, return the same
-        return threshold, levels[idx]
-
-    return thresholds[idx + 1], levels[idx + 1]
+    return (
+        thresholds[thresholds.index(threshold) + 1],
+        levels[thresholds.index(threshold) + 1],
+    )
 
 
 def flag_hits(top_hits: object, final_top_hit: object):
@@ -164,14 +156,12 @@ def flag_hits(top_hits: object, final_top_hit: object):
 
     if (
         not id_method.empty
-        and id_method.str.contains("BOLD|ID|Tree|BIN", regex=False).all()
+        and id_method.str.contains("BOLD|ID|Tree|BIN", regex=True).all()
     ):
         flags[0] = "1"
 
     # flag 2: top hit ratio < 90%
-    #if final_top_hit["records_ratio"].item() < 0.9:
-    #if final_top_hit["records_ratio"].iloc[0] < 0.9:
-    if not final_top_hit.empty and final_top_hit["records_ratio"].iloc[0] < 0.9:
+    if final_top_hit["records_ratio"].item() < 0.9:
         flags[1] = "2"
 
     # flag 3: all of the selected top hits are private
@@ -182,14 +172,7 @@ def flag_hits(top_hits: object, final_top_hit: object):
         flags[3] = "4"
 
     # flag 5: top hit is represented by multiple bins
-    #if len(final_top_hit["BIN"].str.split("|").item()) > 1:
-    # bin_value = final_top_hit["BIN"].iloc[0]
-    if final_top_hit.empty or "BIN" not in final_top_hit.columns:
-        bin_value = pd.NA
-    else:
-        bin_value = final_top_hit["BIN"].iloc[0]
-
-    if pd.notna(bin_value) and len(str(bin_value).split("|")) > 1:
+    if len(final_top_hit["BIN"].str.split("|").item()) > 1:
         flags[4] = "5"
 
     flags = "|".join(flags)
@@ -197,7 +180,7 @@ def flag_hits(top_hits: object, final_top_hit: object):
     return flags
 
 
-def find_top_hit(hits_for_id: object, thresholds: list, mixed_taxonomy_log) -> object:
+def find_top_hit(hits_for_id: object, thresholds: list) -> object:
     """Funtion to find the top hit for a given ID.
 
     Args:
@@ -207,73 +190,6 @@ def find_top_hit(hits_for_id: object, thresholds: list, mixed_taxonomy_log) -> o
     Returns:
         object: Single line dataframe with the selected top hit
     """
-
-    iteration = 0
-    # safety limit to avoid infinite loops    
-    max_iterations = 20
-
-    # guard against empty hits
-    if hits_for_id.empty:
-        return None
-
-    # guard against missing pct_identity
-    if hits_for_id["pct_identity"].dropna().empty:
-        return None
-
-
-
-    # ------------------------------------------------------
-    # Detect mixed higher taxonomy and apply majority filter
-    # ------------------------------------------------------
-    tax_levels = ["phylum", "class", "order"]
-
-    for tax_level in tax_levels:
-        unique_values = hits_for_id[tax_level].dropna().unique()
-        if len(unique_values) > 1:
-            value_counts = hits_for_id[tax_level].value_counts()
-            majority_value = value_counts.idxmax()
-            counts = value_counts.iloc[0]
-            total = value_counts.sum()
-
-            # if majority is not overwhelming (e.g., < 60% of total), drop lower levels
-            if counts / total < 0.75:
-                lower_levels = ["family", "genus", "species"]
-                hits_for_id[lower_levels] = pd.NA
-                majority_value = None  # optional, indicates no clear majority
-
-            removed_rows = hits_for_id[hits_for_id[tax_level] != majority_value] if majority_value else hits_for_id.copy()
-
-            mixed_taxonomy_log.write("\n[WARN] Mixed taxonomy detected\n")
-            mixed_taxonomy_log.write(f"ID: {hits_for_id['id'].iloc[0]}\n")
-            mixed_taxonomy_log.write(f"Level: {tax_level}\n")
-            mixed_taxonomy_log.write(f"Majority: {majority_value}\n")
-            mixed_taxonomy_log.write(f"Removed rows: {len(removed_rows)}\n")
-            mixed_taxonomy_log.write(removed_rows[existing_cols].head(10).to_string())
-            mixed_taxonomy_log.write("\n" + "-"*50 + "\n")
-            mixed_taxonomy_log.write(f"[INFO] Low-majority: cleared lower taxonomy levels\n")
-
-            debug_cols = [
-                "phylum",
-                "class",
-                "order",
-                "family",
-                "genus",
-                "species",
-                "pct_identity",
-                "status",
-                "bin_uri",
-            ]
-
-            existing_cols = [c for c in debug_cols if c in removed_rows.columns]
-
-            #print(removed_rows[existing_cols].head(10))
-
-            # apply majority filter
-            mask = hits_for_id[tax_level] == majority_value
-            hits_for_id = hits_for_id[mask]
-
-
-
     # get the thrshold and taxonomic level
     threshold, level = get_threshold(hits_for_id, thresholds)
 
@@ -319,140 +235,110 @@ def find_top_hit(hits_for_id: object, thresholds: list, mixed_taxonomy_log) -> o
 
         return return_value
 
-    # define the levels for the groupby. care about the selector string later
-    all_levels = ["phylum", "class", "order", "family", "genus", "species"]
     # go through the hits to make the selection
-    while iteration < max_iterations:
-        iteration += 1
+    while True:
         # copy the hits to perform modifications
-        hits_above_similarity = hits_for_id[hits_for_id["pct_identity"] >= threshold].copy()
-        # -----------------------------------------------------------------
-        # Robust handling for mixed taxonomy hits
-        # If species-level records exist, ignore genus-only rows.
-        # This prevents mixed rows like:
-        #   Asaphes vulgaris
-        #   Asaphes
-        # -----------------------------------------------------------------
-        if level == "species":
-            species_rows = hits_above_similarity[
-                hits_above_similarity["species"].notna()
-                & (hits_above_similarity["species"].astype(str).str.strip() != "")
-            ]
-            if not species_rows.empty:
-                hits_above_similarity = species_rows
-        # -----------------------------------------------------------------
+        hits_above_similarity = hits_for_id.copy()
+
+        # select the hits above similarity
+        hits_above_similarity = hits_above_similarity.loc[
+            hits_above_similarity["pct_identity"] > threshold
+        ]
+
+        # define the levels for the groupby. care about the selector string later
+        all_levels = ["phylum", "class", "order", "family", "genus", "species"]
         levels = all_levels[: all_levels.index(level) + 1]
 
-        if hits_above_similarity[levels].dropna(how="all").empty:
-            threshold, level = move_threshold_up(threshold, thresholds)
-            continue
-
-
-        # select the hits above similarity and of interest
+        # only select levels of interest
         hits_above_similarity = hits_above_similarity[levels].copy()
-        hits_above_similarity = (
+
+        # group hits by level and then count the appearence
+        hits_above_similarity = pd.DataFrame(
             hits_above_similarity.groupby(by=levels, sort=False, dropna=False)
             .size()
             .reset_index(name="count")
         )
 
-        hits_above_similarity = hits_above_similarity.dropna(subset=[level], axis=0)
+        # drop nas at the selected level
+        hits_above_similarity = hits_above_similarity.dropna(subset=level, axis=0)
 
-        if hits_above_similarity.empty:
-            try:
-                threshold, level = move_threshold_up(threshold, thresholds)
-                continue
-            except IndexError:
-                fallback = hits_for_id.head(1).copy()
-                fallback["records"] = 1
-                fallback["records_ratio"] = 1.0
-                fallback["selected_level"] = level
-                fallback["BIN"] = ""
-                fallback["flags"] = ""
-                return fallback[
-                    [
-                        "id",
-                        "phylum",
-                        "class",
-                        "order",
-                        "family",
-                        "genus",
-                        "species",
-                        "pct_identity",
-                        "status",
-                        "records",
-                        "records_ratio",
-                        "selected_level",
-                        "BIN",
-                        "flags",
-                        "fasta_order",
-                    ]
-                ]
+        # if there's nothing left, move the threshold up and continue to search
+        # if len(hits_above_similarity.index) == 0:
+        #     threshold, level = move_threshold_up(threshold, thresholds)
+        #     continue
+        if len(hits_above_similarity.index) == 0:
+            old_threshold = threshold
+            threshold, level = move_threshold_up(threshold, thresholds)
 
-        top_hit_row = hits_above_similarity.iloc[0]
-        top_count = top_hit_row["count"]
-        top_ratio = top_count / hits_above_similarity["count"].sum()
+            # If threshold did not change, we are stuck at the last level
+            if threshold == old_threshold:
+                FAILED_IDS.append((hits_for_id["id"].iloc[0], level))
+                break
 
-        #query_parts = [f"`{col}` == '{str(top_hit_row[col]).replace("'", "''")}'" for col in top_hit_row.index[:-1]]
-        query_parts = []
-        for col in top_hit_row.index[:-1]:
-            value = str(top_hit_row[col]).replace("'", "''")
-            query_parts.append(f"`{col}` == '{value}'")
-        
-        query_string = " and ".join(query_parts)
+            continue
+
+
+        # sort by count
+        hits_above_similarity = hits_above_similarity.sort_values(
+            by="count", ascending=False
+        )
+
+        # select the top hit and its count
+        top_hit, top_count, top_ratio = (
+            hits_above_similarity.head(1),
+            hits_above_similarity.head(1)["count"].item(),
+            hits_above_similarity.head(1)["count"].item()
+            / hits_above_similarity["count"].sum(),
+        )
+
+        # drop all columns with na values to not pollute the query string
+        top_hit = top_hit.dropna(axis=1).drop(labels="count", axis=1)
+
+        # create a query string
+        query_string = [
+            f"`{level}` == '{top_hit[level].item()}'" for level in top_hit.columns
+        ]
+        query_string = " and ".join(query_string)
+
+        # query for the top hits
         top_hits = hits_for_id.query(query_string)
 
-        final_top_hit = top_hits.head(1).copy()
-        final_top_hit["records"] = top_count
-        final_top_hit["records_ratio"] = top_ratio
-        final_top_hit["selected_level"] = level
-
-        # safe BIN collection
-        #top_hit_bins = top_hits["bin_uri"].dropna().unique() if threshold == thresholds[0] else []
-        if threshold == thresholds[0] and "bin_uri" in top_hits.columns:
+        # collect the bins from the selected top hit
+        if threshold == thresholds[0]:
             top_hit_bins = top_hits["bin_uri"].dropna().unique()
         else:
             top_hit_bins = []
 
-        final_top_hit["BIN"] = "|".join(top_hit_bins) if len(top_hit_bins) > 0 else pd.NA
+        # select the first match from the top hits table as the top hit
+        final_top_hit = top_hits.head(1).copy()
 
+        # add the record count to the top hit
+        final_top_hit["records"] = top_count
+        final_top_hit["records_ratio"] = top_ratio
+
+        # add the selected level
+        final_top_hit["selected_level"] = level
+
+        # add the BINs to the top hit
+        final_top_hit["BIN"] = "|".join(top_hit_bins)
+
+        # remove information that is higher then the selected level if neccesarry
         if threshold != thresholds[0]:
+            # get the index of the selected level
             idx = all_levels.index(level)
             levels_to_remove = all_levels[idx + 1 :]
             final_top_hit[levels_to_remove] = pd.NA
-            final_top_hit[levels_to_remove] = final_top_hit[levels_to_remove].astype("string")
+            final_top_hit[levels_to_remove] = final_top_hit[levels_to_remove].astype(
+                "string"
+            )
+            break
+        break
 
-        final_top_hit["flags"] = flag_hits(top_hits, final_top_hit)
+    # add flags to the hits
+    final_top_hit["flags"] = flag_hits(top_hits, final_top_hit)
 
-        final_top_hit = final_top_hit[
-            [
-                "id",
-                "phylum",
-                "class",
-                "order",
-                "family",
-                "genus",
-                "species",
-                "pct_identity",
-                "status",
-                "records",
-                "records_ratio",
-                "selected_level",
-                "BIN",
-                "flags",
-                "fasta_order",
-            ]
-        ]
-        return final_top_hit
-
-    # fallback if max iterations reached
-    fallback = hits_for_id.head(1).copy()
-    fallback["records"] = 1
-    fallback["records_ratio"] = 1.0
-    fallback["selected_level"] = level
-    fallback["BIN"] = ""
-    fallback["flags"] = ""
-    return fallback[
+    # only select the data relevant for output
+    final_top_hit = final_top_hit[
         [
             "id",
             "phylum",
@@ -472,69 +358,33 @@ def find_top_hit(hits_for_id: object, thresholds: list, mixed_taxonomy_log) -> o
         ]
     ]
 
+    return final_top_hit
+
 
 def gather_top_hits(
-    fasta_dict, id_engine_db_path, project_directory, fasta_name, thresholds, mixed_taxonomy_log
+    fasta_dict, id_engine_db_path, project_directory, fasta_name, thresholds
 ):
     # store top hits here until n are reached, flush to parquet inbetween
     top_hits_buffer = []
     buffer_counter = 0
 
     with duckdb.connect(id_engine_db_path) as connection:
-        for query_id in tqdm(fasta_dict.keys(), desc="Top hit calculation"):
-            #sql_query = f"SELECT * FROM final_results WHERE id='{query_id}' ORDER BY fasta_order ASC, pct_identity DESC"
-            #hits_for_id = clean_dataframe(connection.execute(sql_query).df())
-            sql_query = """
-            SELECT * FROM final_results 
-            WHERE id = ?
-            ORDER BY fasta_order ASC, pct_identity DESC
-            """
-            hits_for_id = clean_dataframe(connection.execute(sql_query, [query_id]).df())
-
-            if hits_for_id.empty:
-                print(f"[WARN] No hits found for ID: {query_id}")
-                continue
-
-            try:
-                result = find_top_hit(hits_for_id, thresholds, mixed_taxonomy_log)
-                if result is not None and not result.empty:
-                    top_hits_buffer.append(result)
-
-            except Exception as e:
-                print(f"[ERROR] Failed processing ID {query_id}: {e}")
-
-                # ---------------- DEBUG BLOCK ----------------
-                # print("\n----- DEBUG HITS START -----")
-                # print(f"Query ID: {query_id}")
-                # print("Number of hits:", len(hits_for_id))
-
-                # debug_cols = [
-                #     "id",
-                #     "phylum",
-                #     "class",
-                #     "order",
-                #     "family",
-                #     "genus",
-                #     "species",
-                #     "pct_identity",
-                #     "status",
-                #     "bin_uri",
-                # ]
-
-                # existing_cols = [c for c in debug_cols if c in hits_for_id.columns]
-                # print(hits_for_id[existing_cols].head(20))
-                # print("----- DEBUG HITS END -----\n")
-                # ------------------------------------------------
-
-                continue
-
-            # flush buffer
+        # extract the data per query from duckdb
+        for query in tqdm(fasta_dict.keys(), desc="Top hit calculation"):
+            sql_query = f"SELECT * FROM final_results WHERE id='{query}' ORDER BY fasta_order ASC, pct_identity DESC"
+            query = clean_dataframe(connection.execute(sql_query).df())
+            # find the top hit
+            top_hits_buffer.append(find_top_hit(query, thresholds))
+            # spill to parquet whenever there are 1k hits in the buffer, ingest parquet later for saving
             if len(top_hits_buffer) >= 1_000:
                 parquet_output = project_directory.joinpath(
                     "boldigger3_data",
-                    f"{fasta_name}_top_hit_buffer_{buffer_counter}.parquet.snappy"
+                    f"{fasta_name}_top_hit_buffer_{buffer_counter}.parquet.snappy",
                 )
-                pd.concat(top_hits_buffer, axis=0).reset_index(drop=True).to_parquet(parquet_output)
+                top_hits_buffer = pd.concat(top_hits_buffer, axis=0).reset_index(
+                    drop=True
+                )
+                top_hits_buffer.to_parquet(parquet_output)
                 buffer_counter += 1
                 top_hits_buffer = []
 
@@ -544,9 +394,22 @@ def gather_top_hits(
                 "boldigger3_data",
                 f"{fasta_name}_top_hit_buffer_{buffer_counter}.parquet.snappy",
             )
-            pd.concat(top_hits_buffer, axis=0).reset_index(drop=True).to_parquet(parquet_output)
-            #top_hits_buffer = pd.concat(top_hits_buffer, axis=0).reset_index(drop=True)
-            #top_hits_buffer.to_parquet(parquet_output)
+
+            top_hits_buffer = pd.concat(top_hits_buffer, axis=0).reset_index(drop=True)
+            top_hits_buffer.to_parquet(parquet_output)
+        
+        if FAILED_IDS:
+            failed_path = project_directory.joinpath(
+                "boldigger3_data", f"{fasta_name}_failed_ids.txt"
+            )
+            with open(failed_path, "w") as f:
+                for item in FAILED_IDS:
+                    if isinstance(item, tuple):
+                        f.write(f"{item[0]}\t{item[1]}\n")
+                    else:
+                        f.write(f"{item}\n")
+
+
 
 
 def save_results(project_directory, fasta_name):
@@ -554,12 +417,6 @@ def save_results(project_directory, fasta_name):
     data_paths = project_directory.joinpath("boldigger3_data").glob(
         f"{fasta_name}_top_hit_buffer_*.parquet.snappy"
     )
-    data_paths = list(data_paths)
-
-    if not data_paths:
-        print("[WARN] No top hits generated.")
-        return
-
     all_top_hits = dd.read_parquet([str(f) for f in data_paths])
 
     # order values globally by fasta order, drop afterwards
@@ -597,29 +454,6 @@ def main(fasta_path: str, thresholds: list):
     # load the fasta data
     fasta_dict, fasta_name, project_directory = parse_fasta(fasta_path)
 
-    # ----------------------------------------
-    # create log file capturing terminal output
-    # ----------------------------------------
-    log_dir = project_directory.joinpath("boldigger3_logs")
-    log_dir.mkdir(exist_ok=True)
-
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file_path = log_dir.joinpath(f"{timestamp}_{fasta_name}.log")
-
-    log_file = open(log_file_path, "w", buffering=1)
-
-    sys.stdout = Tee(log_file, sys.__stdout__)
-    sys.stderr = Tee(log_file, sys.__stderr__)
-
-    print(f"[LOG] Writing terminal output to: {log_file_path}")
-
-    # ----------------------------------------
-    # create separate log for mixed taxonomy
-    # ----------------------------------------
-    mixed_taxonomy_log_path = log_dir.joinpath(f"{timestamp}_{fasta_name}_mixed_taxonomy.log")
-    mixed_taxonomy_log = open(mixed_taxonomy_log_path, "w", buffering=1)
-
-
     # define the id engine database path
     id_engine_db_path = project_directory.joinpath(
         "boldigger3_data", f"{fasta_name}.duckdb"
@@ -635,7 +469,7 @@ def main(fasta_path: str, thresholds: list):
     tqdm.write(f"{datetime.datetime.now().strftime('%H:%M:%S')}: Calculating top hits.")
 
     gather_top_hits(
-        fasta_dict, id_engine_db_path, project_directory, fasta_name, thresholds, mixed_taxonomy_log
+        fasta_dict, id_engine_db_path, project_directory, fasta_name, thresholds
     )
     tqdm.write(
         f"{datetime.datetime.now().strftime('%H:%M:%S')}: Saving results. This may take a while."
@@ -644,5 +478,3 @@ def main(fasta_path: str, thresholds: list):
     save_results(project_directory, fasta_name)
 
     tqdm.write(f"{datetime.datetime.now().strftime('%H:%M:%S')}: Finished.")
-    print(f"[SUMMARY] Mixed taxonomy conflicts detected: {TAXONOMY_CONFLICT_COUNTER}")
-    mixed_taxonomy_log.close()
