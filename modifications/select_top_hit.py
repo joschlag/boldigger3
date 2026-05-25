@@ -141,11 +141,13 @@ def move_threshold_up(threshold: int, thresholds: list) -> tuple:
     """
     levels = ["species", "genus", "family", "order", "class", "phylum"]
 
-    return (
-        thresholds[thresholds.index(threshold) + 1],
-        levels[thresholds.index(threshold) + 1],
-    )
+    idx = thresholds.index(threshold)
 
+    # If already at the last threshold, stop moving up
+    if idx == len(thresholds) - 1:
+        return threshold, levels[idx]
+
+    return thresholds[idx + 1], levels[idx + 1]
 
 def flag_hits(top_hits: object, final_top_hit: object):
     # initialize the flags
