@@ -347,7 +347,10 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
 
         # remove information that is higher then the selected level if neccesarry
         if threshold != thresholds[0]:
-            # get the index of the selected level
+            # ensure top_hits exists before breaking
+            if 'top_hits' not in locals():
+                top_hits = hits_for_id
+
             idx = all_levels.index(level)
             levels_to_remove = all_levels[idx + 1 :]
             final_top_hit[levels_to_remove] = pd.NA
@@ -355,7 +358,13 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
                 "string"
             )
             break
+
+        # ensure top_hits exists before breaking
+        if 'top_hits' not in locals():
+            top_hits = hits_for_id
+
         break
+
 
     # add flags to the hits
     final_top_hit["flags"] = flag_hits(top_hits, final_top_hit)
