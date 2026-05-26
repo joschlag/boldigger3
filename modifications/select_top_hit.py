@@ -444,6 +444,20 @@ def gather_top_hits(
                 top_hits_buffer = pd.concat(top_hits_buffer, axis=0).reset_index(
                     drop=True
                 )
+
+                # ----  DTYPE FIX ----
+                top_hits_buffer["records_ratio"] = (
+                    pd.to_numeric(top_hits_buffer["records_ratio"], errors="coerce")
+                    .fillna(0.0)
+                    .astype(float)
+                )
+                top_hits_buffer["records"] = (
+                    pd.to_numeric(top_hits_buffer["records"], errors="coerce")
+                    .fillna(0)
+                    .astype(int)
+                )
+                # -------------------
+                
                 top_hits_buffer.to_parquet(parquet_output)
                 buffer_counter += 1
                 top_hits_buffer = []
@@ -456,11 +470,24 @@ def gather_top_hits(
             )
 
             top_hits_buffer = pd.concat(top_hits_buffer, axis=0).reset_index(drop=True)
+
+            # ----  DTYPE FIX ----
+            top_hits_buffer["records_ratio"] = (
+                pd.to_numeric(top_hits_buffer["records_ratio"], errors="coerce")
+                .fillna(0.0)
+                .astype(float)
+            )
+            top_hits_buffer["records"] = (
+                pd.to_numeric(top_hits_buffer["records"], errors="coerce")
+                .fillna(0)
+                .astype(int)
+            )
+            # -------------------
+            
             top_hits_buffer.to_parquet(parquet_output)
         
         if FAILED_IDS:
             print("FAILED IDS:", FAILED_IDS)
-            # no file writing
 
 
 
