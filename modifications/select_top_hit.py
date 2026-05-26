@@ -204,7 +204,7 @@ def flag_hits(top_hits: object, final_top_hit: object):
 
 
 def find_top_hit(hits_for_id: object, thresholds: list) -> object:
-    """Funtion to find the top hit for a given ID.
+    """Function to find the top hit for a given ID.
 
     Args:
         hits_for_id (object): Dataframe with the data for a given ID
@@ -257,17 +257,17 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
         )
 
         return return_value
-        
-    # fallback if no top hits are found  
+
+    # fallback if no top hits are found
     top_hits = hits_for_id.copy()              # fallback for top_hits
     final_top_hit = hits_for_id.head(1).copy() # fallback for final_top_hit
 
     # ensure required columns exist for flag_hits()
     final_top_hit["records"] = 0
-    final_top_hit["records_ratio"] = ""
+    final_top_hit["records_ratio"] = 0.0
     final_top_hit["selected_level"] = ""
     final_top_hit["BIN"] = ""
-    
+
     # go through the hits to make the selection
     while True:
         # copy the hits to perform modifications
@@ -296,22 +296,31 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
         hits_above_similarity = hits_above_similarity.dropna(subset=level, axis=0)
 
         # if there's nothing left, move the threshold up and continue to search
-        # if len(hits_above_similarity.index) == 0:
-        #     threshold, level = move_threshold_up(threshold, thresholds)
-        #     continue
         if len(hits_above_similarity.index) == 0:
             old_threshold = threshold
             threshold, level = move_threshold_up(threshold, thresholds)
 
-            # If threshold did not change, we are stuck at the last level
+            # If threshold did not change, we are stuck at the last level → TRUE FAILURE
             if threshold == old_threshold:
                 FAILED_IDS.append((hits_for_id["id"].iloc[0], level))
                 print("FAILING ID:", hits_for_id["id"].iloc[0])
                 print(hits_for_id)
+
+                # mark as no-match at all taxonomy levels
+                for col in ["phylum", "class", "order", "family", "genus", "species"]:
+                    final_top_hit[col] = "no-match"
+
+                final_top_hit["records"] = 0
+                final_top_hit["records_ratio"] = 0.0
+                final_top_hit["selected_level"] = "no-match"
+                final_top_hit["BIN"] = ""
+
+                # no valid top_hits in this case
+                top_hits = hits_for_id.head(0)
+
                 break
 
             continue
-
 
         # sort by count
         hits_above_similarity = hits_above_similarity.sort_values(
@@ -357,42 +366,8 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
         # add the BINs to the top hit
         final_top_hit["BIN"] = "|".join(top_hit_bins)
 
-        # remove information that is higher then the selected level if neccesarry
-        #if threshold != thresholds[0]:
-            # ensure top_hits exists before breaking
-            #if 'top_hits' not in locals():
-            #    top_hits = hits_for_id
-
-            #idx = all_levels.index(level)
-            #levels_to_remove = all_levels[idx + 1 :]
-            #final_top_hit[levels_to_remove] = pd.NA
-            #final_top_hit[levels_to_remove] = final_top_hit[levels_to_remove].astype(
-            #    "string"
-            #)
-            #break
-
-        if threshold != thresholds[0]:
-        
-            # taxonomy → no-match
-            for col in ["phylum", "class", "order", "family", "genus", "species"]:
-                final_top_hit[col] = "no-match"
-        
-            # numeric columns → enforce numeric dtype
-            final_top_hit["records"] = 0
-            final_top_hit["records_ratio"] = 0.0
-        
-            # force dtype (this is the missing piece)
-            final_top_hit["records_ratio"] = final_top_hit["records_ratio"].astype(float)
-            final_top_hit["records"] = final_top_hit["records"].astype(int)
-        
-            break
-
-        # ensure top_hits exists before breaking
-        if 'top_hits' not in locals():
-            top_hits = hits_for_id
-
+        # original behavior: keep taxonomy as is for successful hits
         break
-
 
     # add flags to the hits
     final_top_hit["flags"] = flag_hits(top_hits, final_top_hit)
@@ -419,6 +394,7 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
     ]
 
     return final_top_hit
+
 
 
 def gather_top_hits(
