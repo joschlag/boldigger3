@@ -312,7 +312,7 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
 
                 final_top_hit["records"] = 0
                 final_top_hit["records_ratio"] = 0.0
-                final_top_hit["selected_level"] = "no-match"
+                final_top_hit["selected_level"] = ""
                 final_top_hit["BIN"] = ""
 
                 # no valid top_hits in this case
