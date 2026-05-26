@@ -291,6 +291,8 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
             # If threshold did not change, we are stuck at the last level
             if threshold == old_threshold:
                 FAILED_IDS.append((hits_for_id["id"].iloc[0], level))
+                print("FAILING ID:", hits_for_id["id"].iloc[0])
+                print(hits_for_id)
                 break
 
             continue
@@ -417,6 +419,8 @@ def gather_top_hits(
             top_hits_buffer.to_parquet(parquet_output)
         
         if FAILED_IDS:
+            print("FAILED IDS:", FAILED_IDS)
+            
             failed_path = project_directory.joinpath(
                 "boldigger3_data", f"{fasta_name}_failed_ids.txt"
             )
