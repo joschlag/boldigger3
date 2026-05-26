@@ -365,7 +365,16 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
 
         # add the BINs to the top hit
         final_top_hit["BIN"] = "|".join(top_hit_bins)
-
+        
+        if threshold != thresholds[0]:
+            idx = all_levels.index(level)
+            levels_to_remove = all_levels[idx + 1:]
+        
+            final_top_hit[levels_to_remove] = pd.NA
+            final_top_hit[levels_to_remove] = final_top_hit[
+                levels_to_remove
+            ].astype("string")
+            
         # original behavior: keep taxonomy as is for successful hits
         break
 
