@@ -254,7 +254,8 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
         return return_value
         
     # fallback if no top hits are found  
-    top_hits = hits_for_id  
+    top_hits = hits_for_id.copy()              # fallback for top_hits
+    final_top_hit = hits_for_id.head(1).copy() # fallback for final_top_hit
     
     # go through the hits to make the selection
     while True:
