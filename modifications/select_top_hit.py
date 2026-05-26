@@ -365,18 +365,22 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
             #    "string"
             #)
             #break
+
         if threshold != thresholds[0]:
         
-            # early-break fallback → fill taxonomy with "no-match"
+            # taxonomy → no-match
             for col in ["phylum", "class", "order", "family", "genus", "species"]:
                 final_top_hit[col] = "no-match"
         
-            # ensure numeric columns stay numeric
+            # numeric columns → enforce numeric dtype
             final_top_hit["records"] = 0
             final_top_hit["records_ratio"] = 0.0
         
+            # force dtype (this is the missing piece)
+            final_top_hit["records_ratio"] = final_top_hit["records_ratio"].astype(float)
+            final_top_hit["records"] = final_top_hit["records"].astype(int)
+        
             break
-
 
         # ensure top_hits exists before breaking
         if 'top_hits' not in locals():
