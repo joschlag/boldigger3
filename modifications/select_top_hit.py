@@ -259,8 +259,8 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
 
     # ensure required columns exist for flag_hits()
     final_top_hit["records"] = 0
-    final_top_hit["records_ratio"] = 0.0
-    final_top_hit["selected_level"] = "no-match"
+    final_top_hit["records_ratio"] = ""
+    final_top_hit["selected_level"] = ""
     final_top_hit["BIN"] = ""
     
     # go through the hits to make the selection
@@ -353,18 +353,25 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
         final_top_hit["BIN"] = "|".join(top_hit_bins)
 
         # remove information that is higher then the selected level if neccesarry
-        if threshold != thresholds[0]:
+        #if threshold != thresholds[0]:
             # ensure top_hits exists before breaking
-            if 'top_hits' not in locals():
-                top_hits = hits_for_id
+            #if 'top_hits' not in locals():
+            #    top_hits = hits_for_id
 
-            idx = all_levels.index(level)
-            levels_to_remove = all_levels[idx + 1 :]
-            final_top_hit[levels_to_remove] = pd.NA
-            final_top_hit[levels_to_remove] = final_top_hit[levels_to_remove].astype(
-                "string"
-            )
+            #idx = all_levels.index(level)
+            #levels_to_remove = all_levels[idx + 1 :]
+            #final_top_hit[levels_to_remove] = pd.NA
+            #final_top_hit[levels_to_remove] = final_top_hit[levels_to_remove].astype(
+            #    "string"
+            #)
+            #break
+        if threshold != thresholds[0]:
+            # early-break fallback → fill taxonomy with "no-match"
+            for col in ["phylum", "class", "order", "family", "genus", "species"]:
+                final_top_hit[col] = "no-match"
+        
             break
+
 
         # ensure top_hits exists before breaking
         if 'top_hits' not in locals():
