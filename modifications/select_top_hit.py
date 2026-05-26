@@ -260,7 +260,7 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
     # ensure required columns exist for flag_hits()
     final_top_hit["records"] = 0
     final_top_hit["records_ratio"] = 0.0
-    final_top_hit["selected_level"] = "none"
+    final_top_hit["selected_level"] = "no-match"
     final_top_hit["BIN"] = ""
     
     # go through the hits to make the selection
@@ -439,17 +439,7 @@ def gather_top_hits(
         
         if FAILED_IDS:
             print("FAILED IDS:", FAILED_IDS)
-            
-            failed_path = project_directory.joinpath(
-                "boldigger3_data", f"{fasta_name}_failed_ids.txt"
-            )
-            with open(failed_path, "w") as f:
-                for item in FAILED_IDS:
-                    if isinstance(item, tuple):
-                        f.write(f"{item[0]}\t{item[1]}\n")
-                    else:
-                        f.write(f"{item}\n")
-
+            # no file writing
 
 
 
