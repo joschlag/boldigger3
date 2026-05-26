@@ -114,18 +114,29 @@ def get_threshold(hit_for_id: object, thresholds: list) -> object:
         return 0, "no-match"
     else:
         # move through the taxonomy if it is no nomatch hit or broken record
-        if threshold >= thresholds[0]:
-            return thresholds[0], "species"
-        elif threshold >= thresholds[1]:
-            return thresholds[1], "genus"
-        elif threshold >= thresholds[2]:
-            return thresholds[2], "family"
-        elif threshold >= thresholds[3]:
-            return thresholds[3], "order"
-        elif threshold >= thresholds[4]:
-            return thresholds[4], "class"
-        else:
-            return thresholds[5], "phylum"
+        #if threshold >= thresholds[0]:
+        #    return thresholds[0], "species"
+        #elif threshold >= thresholds[1]:
+        #    return thresholds[1], "genus"
+        #elif threshold >= thresholds[2]:
+        #    return thresholds[2], "family"
+        #elif threshold >= thresholds[3]:
+        #    return thresholds[3], "order"
+        #elif threshold >= thresholds[4]:
+        #    return thresholds[4], "class"
+        #else:
+        #    return thresholds[5], "phylum"
+        levels = ["species", "genus", "family", "order", "class", "phylum"]
+
+        # Iterate thresholds safely
+        for i, t in enumerate(thresholds):
+            if threshold >= t:
+                level = levels[i] if i < len(levels) else levels[-1]
+                return t, level
+
+        # If no threshold matched, return the lowest one
+        last_level = levels[len(thresholds)-1] if len(thresholds) <= len(levels) else levels[-1]
+        return thresholds[-1], last_level
 
 
 def move_threshold_up(threshold: int, thresholds: list) -> tuple:
@@ -143,11 +154,16 @@ def move_threshold_up(threshold: int, thresholds: list) -> tuple:
 
     idx = thresholds.index(threshold)
 
-    # If already at the last threshold, stop moving up
-    if idx == len(thresholds) - 1:
-        return threshold, levels[idx]
+    # If already at last threshold, clamp to last level
+    if idx >= len(thresholds) - 1:
+        level_idx = min(idx, len(levels) - 1)
+        return threshold, levels[level_idx]
 
-    return thresholds[idx + 1], levels[idx + 1]
+    # Move up one threshold, clamp level index
+    new_idx = idx + 1
+    level_idx = min(new_idx, len(levels) - 1)
+
+    return thresholds[new_idx], levels[level_idx]
 
 def flag_hits(top_hits: object, final_top_hit: object):
     # initialize the flags
