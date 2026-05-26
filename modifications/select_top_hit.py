@@ -179,8 +179,13 @@ def flag_hits(top_hits: object, final_top_hit: object):
         flags[0] = "1"
 
     # flag 2: top hit ratio < 90%
-    if final_top_hit["records_ratio"].item() < 0.9:
+    #if final_top_hit["records_ratio"].item() < 0.9:
+    #    flags[1] = "2"
+    ratio = pd.to_numeric(final_top_hit["records_ratio"], errors="coerce").item()
+    if ratio < 0.9:
         flags[1] = "2"
+
+    
 
     # flag 3: all of the selected top hits are private
     if top_hits["status"].isin(["private"]).all():
