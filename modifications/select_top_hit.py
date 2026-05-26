@@ -256,6 +256,12 @@ def find_top_hit(hits_for_id: object, thresholds: list) -> object:
     # fallback if no top hits are found  
     top_hits = hits_for_id.copy()              # fallback for top_hits
     final_top_hit = hits_for_id.head(1).copy() # fallback for final_top_hit
+
+    # ensure required columns exist for flag_hits()
+    final_top_hit["records"] = 0
+    final_top_hit["records_ratio"] = 0.0
+    final_top_hit["selected_level"] = "none"
+    final_top_hit["BIN"] = ""
     
     # go through the hits to make the selection
     while True:
